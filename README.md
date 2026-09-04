@@ -1,4 +1,4 @@
-﻿# Planora — Backend
+# Planora — Backend
 
 REST API for the Planora event management platform. Handles authentication,
 event CRUD, invitations, participant management, SSLCommerz payments, reviews,
