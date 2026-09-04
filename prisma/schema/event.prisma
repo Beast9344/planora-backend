@@ -1,0 +1,100 @@
+model Event {
+  id            String   @id @default(uuid())
+  title         String
+  description   String
+  image         String?
+  eventDateTime DateTime
+  venue         String?
+  eventLink     String?
+
+  visibility      EventVisibility
+  feeType         FeeType         @default(FREE)
+  status          EventStatus     @default(ACTIVE)
+  registrationFee Float           @default(0)
+
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id])
+
+  participants     EventParticipant[]
+  reviews          EventReview[]
+  eventInvitations EventInvitation[]
+
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  isDeleted           Boolean              @default(false)
+  deletedAt           DateTime?
+  paymentTransactions PaymentTransaction[]
+
+  @@index([visibility, feeType])
+  @@index([isDeleted])
+  @@index([eventDateTime])
+  @@index([ownerId])
+  @@index([status])
+  @@index([isDeleted, visibility, eventDateTime])
+}
+
+model EventParticipant {
+  id      String @id @default(uuid())
+  eventId String
+  userId  String
+
+  status ParticipationStatus @default(PENDING)
+
+  paymentStatus PaymentStatus @default(PENDING)
+  paidAmount    Float?
+
+  requestedAt DateTime  @default(now())
+  approvedAt  DateTime?
+  rejectedAt  DateTime?
+  bannedAt    DateTime?
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  isDeleted           Boolean              @default(false)
+  deletedAt           DateTime?
+  paymentTransactions PaymentTransaction[]
+
+  @@unique([eventId, userId])
+}
+
+model EventInvitation {
+  id          String @id @default(uuid())
+  eventId     String
+  userId      String
+  invitedById String
+
+  status InvitationStatus
+
+  event     Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User  @relation("EventInvitationUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User  @relation("EventInvitationInvitedBy", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+
+  @@unique([eventId, userId])
+}
+
+model EventReview {
+  id      String @id @default(uuid())
+  eventId String
+  userId  String
+
+  rating Int
+  review String?
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+
+  @@unique([eventId, userId])
+}

@@ -1,0 +1,58 @@
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+enum EventVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum FeeType {
+  FREE
+  PAID
+}
+
+enum EventStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum ParticipationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  JOINED
+  BANNED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  DELETED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+enum PaymentGateway {
+  SSLCOMMERZ
+}
+
+enum TransactionStatus {
+  INITIATED
+  VALID
+  FAILED
+  CANCELLED
+}
