@@ -120,7 +120,15 @@ export const auth = betterAuth({
       maxAge: 60 * 60 * 60 * 24,
     },
   },
-  trustedOrigins: [envVars.BETTER_AUTH_URL, envVars.FRONTEND_URL],
+  trustedOrigins: [
+    envVars.BETTER_AUTH_URL,
+    envVars.FRONTEND_URL,
+    'https://planora-backend-4bez.vercel.app',
+    'https://planora-frontend-2kwh.vercel.app',
+    'https://planora-frontend-two.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:5000',
+  ],
   advanced: {
     useSecureCookies: envVars.NODE_ENV === 'production',
     cookies: {

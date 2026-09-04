@@ -18,9 +18,13 @@ app.set('query parser', (str: string) => qs.parse(str));
 const explicitAllowedOrigins = [
   envVars.FRONTEND_URL,
   envVars.BETTER_AUTH_URL,
+  'https://planora-frontend-2kwh.vercel.app',
+  'https://planora-backend-4bez.vercel.app',
+  'https://planora-frontend-two.vercel.app',
   'http://localhost:3000',
+  'http://localhost:5000',
 ]
-  .flatMap(value => value.split(','))
+  .flatMap(value => (value || '').split(','))
   .map(value => value.trim())
   .filter(Boolean);
 
@@ -33,8 +37,8 @@ const isAllowedOrigin = (origin?: string) => {
     return true;
   }
 
-  // Allow Vercel preview and production domains for the frontend project.
-  if (/^https:\/\/.*planora-frontend.*\.vercel\.app$/i.test(origin)) {
+  // Allow Vercel preview and production domains for frontend and backend.
+  if (/^https:\/\/.*planora.*\.vercel\.app$/i.test(origin)) {
     return true;
   }
 

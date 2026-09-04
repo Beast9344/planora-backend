@@ -98,7 +98,10 @@ const loadEnvVariables = (): EnvConfig => {
       'BETTER_AUTH_SECRET',
       'DOIe2S8PBHlXQRDdumK02RlEWQBdmYUh',
     ),
-    BETTER_AUTH_URL: getEnv('BETTER_AUTH_URL', 'http://localhost:5000'),
+    BETTER_AUTH_URL: getEnv(
+      'BETTER_AUTH_URL',
+      'https://planora-backend-4bez.vercel.app',
+    ),
     ACCESS_TOKEN_SECRET: getEnv(
       'ACCESS_TOKEN_SECRET',
       'Kjs82kLmPq91@xYt45!zWvR7uBnC38',

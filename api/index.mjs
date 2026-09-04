@@ -161,7 +161,10 @@ var loadEnvVariables = () => {
       "BETTER_AUTH_SECRET",
       "DOIe2S8PBHlXQRDdumK02RlEWQBdmYUh"
     ),
-    BETTER_AUTH_URL: getEnv("BETTER_AUTH_URL", "http://localhost:5000"),
+    BETTER_AUTH_URL: getEnv(
+      "BETTER_AUTH_URL",
+      "https://planora-backend-4bez.vercel.app"
+    ),
     ACCESS_TOKEN_SECRET: getEnv(
       "ACCESS_TOKEN_SECRET",
       "Kjs82kLmPq91@xYt45!zWvR7uBnC38"
@@ -482,7 +485,15 @@ var auth = betterAuth({
       maxAge: 60 * 60 * 60 * 24
     }
   },
-  trustedOrigins: [envVars.BETTER_AUTH_URL, envVars.FRONTEND_URL],
+  trustedOrigins: [
+    envVars.BETTER_AUTH_URL,
+    envVars.FRONTEND_URL,
+    "https://planora-backend-4bez.vercel.app",
+    "https://planora-frontend-2kwh.vercel.app",
+    "https://planora-frontend-two.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:5000"
+  ],
   advanced: {
     useSecureCookies: envVars.NODE_ENV === "production",
     cookies: {
@@ -6230,8 +6241,12 @@ app.set("query parser", (str) => qs.parse(str));
 var explicitAllowedOrigins = [
   envVars.FRONTEND_URL,
   envVars.BETTER_AUTH_URL,
-  "http://localhost:3000"
-].flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+  "https://planora-frontend-2kwh.vercel.app",
+  "https://planora-backend-4bez.vercel.app",
+  "https://planora-frontend-two.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:5000"
+].flatMap((value) => (value || "").split(",")).map((value) => value.trim()).filter(Boolean);
 var isAllowedOrigin = (origin) => {
   if (!origin) {
     return true;
@@ -6239,7 +6254,7 @@ var isAllowedOrigin = (origin) => {
   if (explicitAllowedOrigins.includes(origin)) {
     return true;
   }
-  if (/^https:\/\/.*planora-frontend.*\.vercel\.app$/i.test(origin)) {
+  if (/^https:\/\/.*planora.*\.vercel\.app$/i.test(origin)) {
     return true;
   }
   if (/^https:\/\/(sandbox|securepay)\.sslcommerz\.com$/i.test(origin)) {
