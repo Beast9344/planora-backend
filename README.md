@@ -12,7 +12,7 @@ and admin/dashboard analytics.
 | ----------------- | -------------------------------------------- |
 | **Backend Live**  | https://planora-backend.vercel.app           |
 | **Frontend Live** | https://planora-frontend-two.vercel.app      |
-| **Backend Repo**  | https://github.com/asad9340/planora-backend  |
+| **Backend Repo**  | https://github.com/Beast9344/planora-backend  |
 | **Frontend Repo** | https://github.com/asad9340/planora-frontend |
 
 ---
