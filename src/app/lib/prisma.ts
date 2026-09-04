@@ -6,6 +6,12 @@ import { PrismaClient } from '../../generated/prisma/client';
 
 const pool = new Pool({
   connectionString: envVars.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false,
+  },
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
 const adapter = new PrismaPg(pool);

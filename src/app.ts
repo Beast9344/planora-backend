@@ -70,15 +70,24 @@ dotenv.config();
 app.use(express.json());
 app.use(cookieParser());
 
+app.get('/', (req: Request, res: Response) => {
+  res.send('Planora API is running');
+});
+
+app.get('/health', (req: Request, res: Response) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    environment: envVars.NODE_ENV,
+  });
+});
+
 app.use(async (_req, _res, next) => {
   await prismaSchemaReady;
   next();
 });
 
 app.use('/api/v1', IndexRoutes);
-app.get('/', (req: Request, res: Response) => {
-  res.send('Hello, TypeScript + Express!');
-});
 
 app.use(globalErrorHandler);
 app.use(notFound);
