@@ -49,9 +49,10 @@ const registerUser = async (payload: IRegisterUserPayload) => {
       refreshToken,
     };
   } catch (error: any) {
+    console.error('Registration error details:', error);
     throw new AppError(
       error?.status || status.BAD_REQUEST,
-      error?.message || 'Failed to register user',
+      error?.message || error?.body?.message || 'Failed to register user',
     );
   }
 };

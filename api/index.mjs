@@ -32,7 +32,7 @@ var catchAsync = (fn) => {
 var catchAsync_default = catchAsync;
 
 // src/app/modules/auth/auth.service.ts
-import status2 from "http-status";
+import status from "http-status";
 
 // src/generated/prisma/enums.ts
 var Role = {
@@ -308,7 +308,6 @@ import { bearer, emailOTP } from "better-auth/plugins";
 
 // src/app/utils/email.ts
 import nodemailer from "nodemailer";
-import status from "http-status";
 import path2 from "path";
 import ejs from "ejs";
 var transporter = nodemailer.createTransport({
@@ -320,6 +319,18 @@ var transporter = nodemailer.createTransport({
   },
   port: parseInt(envVars.EMAIL_SENDER.SMTP_PORT)
 });
+var DEFAULT_TEMPLATES = {
+  otp: `
+    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+      <h2 style="color: #333;">Hello <%= name %>,</h2>
+      <p style="font-size: 16px; color: #555;">Your verification code is:</p>
+      <div style="font-size: 28px; font-weight: bold; letter-spacing: 4px; color: #4F46E5; margin: 20px 0; padding: 12px; background: #f3f4f6; text-align: center; border-radius: 6px;">
+        <%= otp %>
+      </div>
+      <p style="font-size: 14px; color: #777;">This OTP will expire in 2 minutes. If you did not request this, please ignore this email.</p>
+    </div>
+  `
+};
 var sendEmail = async ({
   subject,
   templateData,
@@ -328,11 +339,21 @@ var sendEmail = async ({
   attachments
 }) => {
   try {
-    const templatePath = path2.resolve(
-      process.cwd(),
-      `src/app/templates/${templateName}.ejs`
-    );
-    const html = await ejs.renderFile(templatePath, templateData);
+    if (!envVars.EMAIL_SENDER.SMTP_USER || !envVars.EMAIL_SENDER.SMTP_PASS) {
+      console.warn("\u26A0\uFE0F SMTP user or password is missing in environment variables. Email will not be sent.");
+      return;
+    }
+    let html;
+    try {
+      const templatePath = path2.resolve(
+        process.cwd(),
+        `src/app/templates/${templateName}.ejs`
+      );
+      html = await ejs.renderFile(templatePath, templateData);
+    } catch {
+      const inlineTemplate = DEFAULT_TEMPLATES[templateName] || `<h2>Hello <%= name %></h2><p>Your OTP is <%= otp %>.</p>`;
+      html = ejs.render(inlineTemplate, templateData);
+    }
     const info = await transporter.sendMail({
       from: envVars.EMAIL_SENDER.SMTP_FROM,
       to,
@@ -346,8 +367,8 @@ var sendEmail = async ({
     });
     console.log(`Email send to ${to} :${info.messageId}`);
   } catch (error) {
-    console.log("Email sending error ", error.message);
-    throw new AppError_default(status.INTERNAL_SERVER_ERROR, "Failed to send email");
+    console.error("Email sending error:", error.message || error);
+    return;
   }
 };
 
@@ -411,38 +432,42 @@ var auth = betterAuth({
     emailOTP({
       overrideDefaultEmailVerification: true,
       async sendVerificationOTP({ email, otp, type }) {
-        if (type === "email-verification") {
-          const user = await prisma.user.findUnique({
-            where: {
-              email
+        try {
+          if (type === "email-verification") {
+            const user = await prisma.user.findUnique({
+              where: {
+                email
+              }
+            });
+            if (user && !user.emailVerified) {
+              await sendEmail({
+                to: email,
+                subject: "Verify your email",
+                templateName: "otp",
+                templateData: {
+                  name: user.name,
+                  otp
+                }
+              });
             }
-          });
-          if (user && !user.emailVerified) {
-            await sendEmail({
-              to: email,
-              subject: "Verify your email",
-              templateName: "otp",
-              templateData: {
-                name: user.name,
-                otp
-              }
+          } else if (type === "forget-password") {
+            const user = await prisma.user.findUnique({
+              where: { email }
             });
+            if (user) {
+              await sendEmail({
+                to: email,
+                subject: "Password Reset OTP",
+                templateName: "otp",
+                templateData: {
+                  name: user.name,
+                  otp
+                }
+              });
+            }
           }
-        } else if (type === "forget-password") {
-          const user = await prisma.user.findUnique({
-            where: { email }
-          });
-          if (user) {
-            await sendEmail({
-              to: email,
-              subject: "Password Reset OTP",
-              templateName: "otp",
-              templateData: {
-                name: user.name,
-                otp
-              }
-            });
-          }
+        } catch (error) {
+          console.error("Error in sendVerificationOTP hook:", error);
         }
       },
       expiresIn: 2 * 60,
@@ -592,7 +617,7 @@ var registerUser = async (payload) => {
       }
     });
     if (!data?.user) {
-      throw new AppError_default(status2.BAD_REQUEST, "Failed to register user");
+      throw new AppError_default(status.BAD_REQUEST, "Failed to register user");
     }
     const jwtPayload = {
       userId: data.user.id,
@@ -610,9 +635,10 @@ var registerUser = async (payload) => {
       refreshToken
     };
   } catch (error) {
+    console.error("Registration error details:", error);
     throw new AppError_default(
-      error?.status || status2.BAD_REQUEST,
-      error?.message || "Failed to register user"
+      error?.status || status.BAD_REQUEST,
+      error?.message || error?.body?.message || "Failed to register user"
     );
   }
 };
@@ -625,10 +651,10 @@ var loginUser = async (payload) => {
     }
   });
   if (!data?.user) {
-    throw new AppError_default(status2.UNAUTHORIZED, "Invalid credentials");
+    throw new AppError_default(status.UNAUTHORIZED, "Invalid credentials");
   }
   if (data.user.isDeleted) {
-    throw new AppError_default(status2.NOT_FOUND, "User is deleted");
+    throw new AppError_default(status.NOT_FOUND, "User is deleted");
   }
   const jwtPayload = {
     userId: data.user.id,
@@ -685,7 +711,7 @@ var getMe = async (user) => {
     }
   });
   if (!existingUser || existingUser.isDeleted || existingUser.status === UserStatus.DELETED) {
-    throw new AppError_default(status2.NOT_FOUND, "User not found");
+    throw new AppError_default(status.NOT_FOUND, "User not found");
   }
   return existingUser;
 };
@@ -699,14 +725,14 @@ var getNewToken = async (refreshToken, sessionToken) => {
     }
   });
   if (!isSessionTokenExists) {
-    throw new AppError_default(status2.UNAUTHORIZED, "Invalid session token");
+    throw new AppError_default(status.UNAUTHORIZED, "Invalid session token");
   }
   const verifiedRefreshToken = jwtUtils.verifyToken(
     refreshToken,
     envVars.REFRESH_TOKEN_SECRET
   );
   if (!verifiedRefreshToken.success && verifiedRefreshToken.error) {
-    throw new AppError_default(status2.UNAUTHORIZED, "Invalid refresh token");
+    throw new AppError_default(status.UNAUTHORIZED, "Invalid refresh token");
   }
   const data = verifiedRefreshToken.data;
   const jwtPayload = {
@@ -743,7 +769,7 @@ var changePassword = async (payload, sessionToken) => {
     })
   });
   if (!session) {
-    throw new AppError_default(status2.UNAUTHORIZED, "Invalid session token");
+    throw new AppError_default(status.UNAUTHORIZED, "Invalid session token");
   }
   const { currentPassword, newPassword } = payload;
   const result = await auth.api.changePassword({
@@ -789,7 +815,7 @@ var verifyEmail = async (email, otp) => {
     }
   });
   if (!result?.status) {
-    throw new AppError_default(status2.BAD_REQUEST, "Invalid or expired OTP");
+    throw new AppError_default(status.BAD_REQUEST, "Invalid or expired OTP");
   }
   const updatedUser = await prisma.user.update({
     where: { email },
@@ -818,13 +844,13 @@ var resendVerificationOTP = async (email) => {
     where: { email: normalizedEmail }
   });
   if (!user) {
-    throw new AppError_default(status2.NOT_FOUND, "User not found");
+    throw new AppError_default(status.NOT_FOUND, "User not found");
   }
   if (user.emailVerified) {
-    throw new AppError_default(status2.BAD_REQUEST, "Email is already verified");
+    throw new AppError_default(status.BAD_REQUEST, "Email is already verified");
   }
   if (user.isDeleted || user.status === UserStatus.DELETED) {
-    throw new AppError_default(status2.NOT_FOUND, "User not found");
+    throw new AppError_default(status.NOT_FOUND, "User not found");
   }
   await auth.api.sendVerificationOTP({
     body: {
@@ -841,13 +867,13 @@ var forgetPassword = async (email) => {
     where: { email }
   });
   if (!isUserExists) {
-    throw new AppError_default(status2.NOT_FOUND, "User not found");
+    throw new AppError_default(status.NOT_FOUND, "User not found");
   }
   if (!isUserExists.emailVerified) {
-    throw new AppError_default(status2.BAD_REQUEST, "Email not verified");
+    throw new AppError_default(status.BAD_REQUEST, "Email not verified");
   }
   if (isUserExists.isDeleted || isUserExists.status === UserStatus.DELETED) {
-    throw new AppError_default(status2.NOT_FOUND, "User not found");
+    throw new AppError_default(status.NOT_FOUND, "User not found");
   }
   await auth.api.requestPasswordResetEmailOTP({
     body: {
@@ -860,13 +886,13 @@ var resetPassword = async (email, otp, newPassword) => {
     where: { email }
   });
   if (!isUserExists) {
-    throw new AppError_default(status2.NOT_FOUND, "User not found");
+    throw new AppError_default(status.NOT_FOUND, "User not found");
   }
   if (!isUserExists.emailVerified) {
-    throw new AppError_default(status2.BAD_REQUEST, "Email not verified");
+    throw new AppError_default(status.BAD_REQUEST, "Email not verified");
   }
   if (isUserExists.isDeleted || isUserExists.status === UserStatus.DELETED) {
-    throw new AppError_default(status2.NOT_FOUND, "User not found");
+    throw new AppError_default(status.NOT_FOUND, "User not found");
   }
   await auth.api.resetPasswordEmailOTP({
     body: {
@@ -925,7 +951,7 @@ var authService = {
 };
 
 // src/app/modules/auth/auth.controller.ts
-import status3 from "http-status";
+import status2 from "http-status";
 var registerUser2 = catchAsync_default(async (req, res) => {
   const payload = req.body;
   const result = await authService.registerUser(payload);
@@ -934,7 +960,7 @@ var registerUser2 = catchAsync_default(async (req, res) => {
   tokenUtils.setRefreshTokenCookie(res, refreshToken);
   tokenUtils.setBetterAuthSessionCookie(res, token);
   sendResponse(res, {
-    httpStatusCode: status3.CREATED,
+    httpStatusCode: status2.CREATED,
     success: true,
     message: "User registered successfully",
     data: {
@@ -953,7 +979,7 @@ var loginUser2 = catchAsync_default(async (req, res) => {
   tokenUtils.setRefreshTokenCookie(res, refreshToken);
   tokenUtils.setBetterAuthSessionCookie(res, token);
   sendResponse(res, {
-    httpStatusCode: status3.OK,
+    httpStatusCode: status2.OK,
     success: true,
     message: "User logged in successfully",
     data: {
@@ -967,7 +993,7 @@ var loginUser2 = catchAsync_default(async (req, res) => {
 var getMe2 = catchAsync_default(async (req, res) => {
   const result = await authService.getMe(req.user);
   sendResponse(res, {
-    httpStatusCode: status3.OK,
+    httpStatusCode: status2.OK,
     success: true,
     message: "User profile fetch successfully",
     data: result
@@ -977,7 +1003,7 @@ var getNewToken2 = catchAsync_default(async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
   const betterAuthSessionToken = req.cookies["better-auth.session_token"] || req.cookies["better-auth.session-token"];
   if (!refreshToken) {
-    throw new AppError_default(status3.UNAUTHORIZED, "Refresh token is missing");
+    throw new AppError_default(status2.UNAUTHORIZED, "Refresh token is missing");
   }
   const result = await authService.getNewToken(
     refreshToken,
@@ -988,7 +1014,7 @@ var getNewToken2 = catchAsync_default(async (req, res) => {
   tokenUtils.setRefreshTokenCookie(res, newRefreshToken);
   tokenUtils.setBetterAuthSessionCookie(res, sessionToken);
   sendResponse(res, {
-    httpStatusCode: status3.OK,
+    httpStatusCode: status2.OK,
     success: true,
     message: "New tokens generated successfully",
     data: {
@@ -1010,7 +1036,7 @@ var changePassword2 = catchAsync_default(async (req, res) => {
   tokenUtils.setRefreshTokenCookie(res, refreshToken);
   tokenUtils.setBetterAuthSessionCookie(res, token);
   sendResponse(res, {
-    httpStatusCode: status3.OK,
+    httpStatusCode: status2.OK,
     success: true,
     message: "Password changed successfully",
     data: result
@@ -1035,7 +1061,7 @@ var logoutUser2 = catchAsync_default(async (req, res) => {
     sameSite: "none"
   });
   sendResponse(res, {
-    httpStatusCode: status3.OK,
+    httpStatusCode: status2.OK,
     success: true,
     message: "User logout successfully",
     data: result
@@ -1051,7 +1077,7 @@ var verifyEmail2 = catchAsync_default(async (req, res) => {
     tokenUtils.setBetterAuthSessionCookie(res, sessionToken);
   }
   sendResponse(res, {
-    httpStatusCode: status3.OK,
+    httpStatusCode: status2.OK,
     success: true,
     message: "Email verified successfully",
     data: result
@@ -1062,7 +1088,7 @@ var resendVerificationOTP2 = catchAsync_default(
     const { email } = req.body;
     const result = await authService.resendVerificationOTP(email);
     sendResponse(res, {
-      httpStatusCode: status3.OK,
+      httpStatusCode: status2.OK,
       success: true,
       message: "Verification OTP sent successfully",
       data: result
@@ -1073,7 +1099,7 @@ var forgetPassword2 = catchAsync_default(async (req, res) => {
   const { email } = req.body;
   await authService.forgetPassword(email);
   sendResponse(res, {
-    httpStatusCode: status3.OK,
+    httpStatusCode: status2.OK,
     success: true,
     message: "Password reset OTP sent to email successfully"
   });
@@ -1082,7 +1108,7 @@ var resetPassword2 = catchAsync_default(async (req, res) => {
   const { email, otp, newPassword } = req.body;
   await authService.resetPassword(email, otp, newPassword);
   sendResponse(res, {
-    httpStatusCode: status3.OK,
+    httpStatusCode: status2.OK,
     success: true,
     message: "Password reset successfully"
   });
@@ -1147,7 +1173,7 @@ var authController = {
 };
 
 // src/app/middleware/checkAuth.ts
-import status4 from "http-status";
+import status3 from "http-status";
 var hasRoleAccess = (authRoles, userRole) => {
   if (authRoles.includes(userRole)) {
     return true;
@@ -1188,19 +1214,19 @@ var checkAuth = (...authRoles) => async (req, res, next) => {
         }
         if (user.status === UserStatus.BLOCKED || user.status === UserStatus.DELETED) {
           throw new AppError_default(
-            status4.UNAUTHORIZED,
+            status3.UNAUTHORIZED,
             "Unauthorized access! User is not active."
           );
         }
         if (user.isDeleted) {
           throw new AppError_default(
-            status4.UNAUTHORIZED,
+            status3.UNAUTHORIZED,
             "Unauthorized access! User is deleted."
           );
         }
         if (authRoles.length > 0 && !hasRoleAccess(authRoles, user.role)) {
           throw new AppError_default(
-            status4.FORBIDDEN,
+            status3.FORBIDDEN,
             "Forbidden access! You do not have permission to access this resource."
           );
         }
@@ -1218,7 +1244,7 @@ var checkAuth = (...authRoles) => async (req, res, next) => {
     const accessToken = CookieUtils.getCookie(req, "accessToken");
     if (!accessToken) {
       throw new AppError_default(
-        status4.UNAUTHORIZED,
+        status3.UNAUTHORIZED,
         "Unauthorized access! No access token provided."
       );
     }
@@ -1228,7 +1254,7 @@ var checkAuth = (...authRoles) => async (req, res, next) => {
     );
     if (!verifiedToken.success) {
       throw new AppError_default(
-        status4.UNAUTHORIZED,
+        status3.UNAUTHORIZED,
         "Unauthorized access! Invalid access token."
       );
     }
@@ -1236,7 +1262,7 @@ var checkAuth = (...authRoles) => async (req, res, next) => {
       const tokenData = verifiedToken.data;
       if (!tokenData?.userId) {
         throw new AppError_default(
-          status4.UNAUTHORIZED,
+          status3.UNAUTHORIZED,
           "Unauthorized access! Invalid token payload."
         );
       }
@@ -1248,7 +1274,7 @@ var checkAuth = (...authRoles) => async (req, res, next) => {
       });
       if (!user || user.status === UserStatus.BLOCKED || user.status === UserStatus.DELETED) {
         throw new AppError_default(
-          status4.UNAUTHORIZED,
+          status3.UNAUTHORIZED,
           "Unauthorized access! User is not active."
         );
       }
@@ -1264,7 +1290,7 @@ var checkAuth = (...authRoles) => async (req, res, next) => {
     }
     if (authRoles.length > 0 && !hasRoleAccess(authRoles, req.user.role)) {
       throw new AppError_default(
-        status4.FORBIDDEN,
+        status3.FORBIDDEN,
         "Forbidden access! You do not have permission to access this resource."
       );
     }
@@ -1303,10 +1329,10 @@ var AuthRoutes = router;
 import { Router as Router2 } from "express";
 
 // src/app/modules/user/user.controller.ts
-import status6 from "http-status";
+import status5 from "http-status";
 
 // src/app/modules/user/user.service.ts
-import status5 from "http-status";
+import status4 from "http-status";
 var searchUsers = async (user, query) => {
   const searchTerm = query.searchTerm?.trim();
   const eventId = query.eventId?.trim();
@@ -1324,11 +1350,11 @@ var searchUsers = async (user, query) => {
       }
     });
     if (!event) {
-      throw new AppError_default(status5.NOT_FOUND, "Event not found");
+      throw new AppError_default(status4.NOT_FOUND, "Event not found");
     }
     if (event.ownerId !== user.userId && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
       throw new AppError_default(
-        status5.FORBIDDEN,
+        status4.FORBIDDEN,
         "You are not allowed to invite users for this event"
       );
     }
@@ -1432,7 +1458,7 @@ var getMe3 = async (user) => {
     }
   });
   if (!existingUser || existingUser.isDeleted || existingUser.status === UserStatus.DELETED) {
-    throw new AppError_default(status5.NOT_FOUND, "User not found");
+    throw new AppError_default(status4.NOT_FOUND, "User not found");
   }
   return existingUser;
 };
@@ -1443,10 +1469,10 @@ var updateMe = async (user, payload) => {
     }
   });
   if (!existingUser || existingUser.isDeleted || existingUser.status === UserStatus.DELETED) {
-    throw new AppError_default(status5.NOT_FOUND, "User not found");
+    throw new AppError_default(status4.NOT_FOUND, "User not found");
   }
   if (!payload || Object.keys(payload).length === 0) {
-    throw new AppError_default(status5.BAD_REQUEST, "No data provided");
+    throw new AppError_default(status4.BAD_REQUEST, "No data provided");
   }
   const updatedUser = await prisma.user.update({
     where: {
@@ -1463,7 +1489,7 @@ var deleteMe = async (user) => {
     }
   });
   if (!existingUser || existingUser.isDeleted || existingUser.status === UserStatus.DELETED) {
-    throw new AppError_default(status5.NOT_FOUND, "User not found");
+    throw new AppError_default(status4.NOT_FOUND, "User not found");
   }
   const deletedUser = await prisma.user.update({
     where: {
@@ -1488,7 +1514,7 @@ var UserService = {
 var getMe4 = catchAsync_default(async (req, res) => {
   const result = await UserService.getMe(req.user);
   sendResponse(res, {
-    httpStatusCode: status6.OK,
+    httpStatusCode: status5.OK,
     success: true,
     message: "Profile retrieved successfully",
     data: result
@@ -1500,7 +1526,7 @@ var searchUsers2 = catchAsync_default(async (req, res) => {
     req.query
   );
   sendResponse(res, {
-    httpStatusCode: status6.OK,
+    httpStatusCode: status5.OK,
     success: true,
     message: "Users retrieved successfully",
     data: result
@@ -1509,7 +1535,7 @@ var searchUsers2 = catchAsync_default(async (req, res) => {
 var updateMe2 = catchAsync_default(async (req, res) => {
   const result = await UserService.updateMe(req.user, req.body);
   sendResponse(res, {
-    httpStatusCode: status6.OK,
+    httpStatusCode: status5.OK,
     success: true,
     message: "Profile updated successfully",
     data: result
@@ -1518,7 +1544,7 @@ var updateMe2 = catchAsync_default(async (req, res) => {
 var deleteMe2 = catchAsync_default(async (req, res) => {
   const result = await UserService.deleteMe(req.user);
   sendResponse(res, {
-    httpStatusCode: status6.OK,
+    httpStatusCode: status5.OK,
     success: true,
     message: "Account deleted successfully",
     data: result
@@ -1527,14 +1553,14 @@ var deleteMe2 = catchAsync_default(async (req, res) => {
 var uploadAvatar = catchAsync_default(async (req, res) => {
   const file2 = req.file;
   if (!file2) {
-    throw new AppError_default(status6.BAD_REQUEST, "No image file provided");
+    throw new AppError_default(status5.BAD_REQUEST, "No image file provided");
   }
   const imageUrl = file2.path;
   const result = await UserService.updateMe(req.user, {
     image: imageUrl
   });
   sendResponse(res, {
-    httpStatusCode: status6.OK,
+    httpStatusCode: status5.OK,
     success: true,
     message: "Profile image updated successfully",
     data: { imageUrl: result.image }
@@ -1580,7 +1606,7 @@ import { CloudinaryStorage } from "multer-storage-cloudinary";
 
 // src/app/config/cloudinary.config.ts
 import { v2 as cloudinary } from "cloudinary";
-import status7 from "http-status";
+import status6 from "http-status";
 cloudinary.config({
   cloud_name: envVars.CLOUDINARY.CLOUDINARY_CLOUD_NAME,
   api_key: envVars.CLOUDINARY.CLOUDINARY_API_KEY,
@@ -1600,7 +1626,7 @@ var deleteFileFromCloudinary = async (url) => {
   } catch (error) {
     console.error("Error deleting file from Cloudinary:", error);
     throw new AppError_default(
-      status7.INTERNAL_SERVER_ERROR,
+      status6.INTERNAL_SERVER_ERROR,
       "Failed to delete file from Cloudinary"
     );
   }
@@ -1652,10 +1678,10 @@ var UserRoutes = router2;
 import { Router as Router3 } from "express";
 
 // src/app/modules/event/event.controller.ts
-import status9 from "http-status";
+import status8 from "http-status";
 
 // src/app/modules/event/event.service.ts
-import status8 from "http-status";
+import status7 from "http-status";
 
 // src/app/utils/QueryBuilder.ts
 var QueryBuilder = class {
@@ -2074,7 +2100,7 @@ var eventIncludeConfig = {
 var buildEventDateTime = (eventDate, eventTime) => {
   const dateTime = /* @__PURE__ */ new Date(`${eventDate}T${eventTime}:00`);
   if (Number.isNaN(dateTime.getTime())) {
-    throw new AppError_default(status8.BAD_REQUEST, "Invalid event date or time");
+    throw new AppError_default(status7.BAD_REQUEST, "Invalid event date or time");
   }
   return dateTime;
 };
@@ -2242,7 +2268,7 @@ var getSingleEvent = async (eventId) => {
     }
   });
   if (!event) {
-    throw new AppError_default(status8.NOT_FOUND, "Event not found");
+    throw new AppError_default(status7.NOT_FOUND, "Event not found");
   }
   return event;
 };
@@ -2495,11 +2521,11 @@ var updateEvent = async (user, eventId, payload) => {
     }
   });
   if (!existingEvent) {
-    throw new AppError_default(status8.NOT_FOUND, "Event not found");
+    throw new AppError_default(status7.NOT_FOUND, "Event not found");
   }
   if (existingEvent.ownerId !== user.userId && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status8.FORBIDDEN,
+      status7.FORBIDDEN,
       "You are not allowed to update this event"
     );
   }
@@ -2550,11 +2576,11 @@ var deleteEvent = async (user, eventId) => {
     }
   });
   if (!existingEvent) {
-    throw new AppError_default(status8.NOT_FOUND, "Event not found");
+    throw new AppError_default(status7.NOT_FOUND, "Event not found");
   }
   if (existingEvent.ownerId !== user.userId && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status8.FORBIDDEN,
+      status7.FORBIDDEN,
       "You are not allowed to delete this event"
     );
   }
@@ -2589,7 +2615,7 @@ var createEvent2 = catchAsync_default(async (req, res) => {
     ...imageUrl ? { image: imageUrl } : {}
   });
   sendResponse(res, {
-    httpStatusCode: status9.CREATED,
+    httpStatusCode: status8.CREATED,
     success: true,
     message: "Event created successfully",
     data: result
@@ -2598,7 +2624,7 @@ var createEvent2 = catchAsync_default(async (req, res) => {
 var getAllEvents2 = catchAsync_default(async (req, res) => {
   const result = await EventService.getAllEvents(req.query);
   sendResponse(res, {
-    httpStatusCode: status9.OK,
+    httpStatusCode: status8.OK,
     success: true,
     message: "Events retrieved successfully",
     data: result.data,
@@ -2608,7 +2634,7 @@ var getAllEvents2 = catchAsync_default(async (req, res) => {
 var getMyEvents2 = catchAsync_default(async (req, res) => {
   const result = await EventService.getMyEvents(req.user);
   sendResponse(res, {
-    httpStatusCode: status9.OK,
+    httpStatusCode: status8.OK,
     success: true,
     message: "My events retrieved successfully",
     data: result
@@ -2618,7 +2644,7 @@ var getUpcomingPublicEvents2 = catchAsync_default(
   async (_req, res) => {
     const result = await EventService.getUpcomingPublicEvents();
     sendResponse(res, {
-      httpStatusCode: status9.OK,
+      httpStatusCode: status8.OK,
       success: true,
       message: "Upcoming public events retrieved successfully",
       data: result
@@ -2637,7 +2663,7 @@ var getSearchSuggestions2 = catchAsync_default(async (req, res) => {
     };
   }
   sendResponse(res, {
-    httpStatusCode: status9.OK,
+    httpStatusCode: status8.OK,
     success: true,
     message: "Event search suggestions retrieved successfully",
     data: result
@@ -2650,7 +2676,7 @@ var getPersonalizedRecommendations2 = catchAsync_default(
       req.query
     );
     sendResponse(res, {
-      httpStatusCode: status9.OK,
+      httpStatusCode: status8.OK,
       success: true,
       message: "Personalized recommendations retrieved successfully",
       data: result
@@ -2662,7 +2688,7 @@ var getSingleEvent2 = catchAsync_default(async (req, res) => {
     req.params.eventId
   );
   sendResponse(res, {
-    httpStatusCode: status9.OK,
+    httpStatusCode: status8.OK,
     success: true,
     message: "Event retrieved successfully",
     data: result
@@ -2679,7 +2705,7 @@ var updateEvent2 = catchAsync_default(async (req, res) => {
     }
   );
   sendResponse(res, {
-    httpStatusCode: status9.OK,
+    httpStatusCode: status8.OK,
     success: true,
     message: "Event updated successfully",
     data: result
@@ -2691,7 +2717,7 @@ var deleteEvent2 = catchAsync_default(async (req, res) => {
     req.params.eventId
   );
   sendResponse(res, {
-    httpStatusCode: status9.OK,
+    httpStatusCode: status8.OK,
     success: true,
     message: "Event deleted successfully",
     data: result
@@ -2782,10 +2808,10 @@ var EventRoutes = router3;
 import { Router as Router4 } from "express";
 
 // src/app/modules/participation/participation.controller.ts
-import status11 from "http-status";
+import status10 from "http-status";
 
 // src/app/modules/participation/participation.service.ts
-import status10 from "http-status";
+import status9 from "http-status";
 var participationSearchableFields = ["event.title", "event.venue"];
 var participationFilterableFields = ["status", "paymentStatus"];
 var joinEvent = async (user, eventId) => {
@@ -2796,16 +2822,16 @@ var joinEvent = async (user, eventId) => {
     }
   });
   if (!event) {
-    throw new AppError_default(status10.NOT_FOUND, "Event not found");
+    throw new AppError_default(status9.NOT_FOUND, "Event not found");
   }
   if (event.status !== EventStatus.ACTIVE) {
     throw new AppError_default(
-      status10.BAD_REQUEST,
+      status9.BAD_REQUEST,
       "This event is not accepting new participants"
     );
   }
   if (event.ownerId === user.userId) {
-    throw new AppError_default(status10.BAD_REQUEST, "Event owner cannot join own event");
+    throw new AppError_default(status9.BAD_REQUEST, "Event owner cannot join own event");
   }
   const existingParticipant = await prisma.eventParticipant.findFirst({
     where: {
@@ -2816,7 +2842,7 @@ var joinEvent = async (user, eventId) => {
   });
   if (existingParticipant) {
     throw new AppError_default(
-      status10.CONFLICT,
+      status9.CONFLICT,
       "You already requested or joined this event"
     );
   }
@@ -2887,11 +2913,11 @@ var getEventParticipants = async (user, eventId, query = {}) => {
     }
   });
   if (!event) {
-    throw new AppError_default(status10.NOT_FOUND, "Event not found");
+    throw new AppError_default(status9.NOT_FOUND, "Event not found");
   }
   if (event.ownerId !== user.userId && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status10.FORBIDDEN,
+      status9.FORBIDDEN,
       "You are not allowed to view participants"
     );
   }
@@ -2960,29 +2986,29 @@ var approveParticipant = async (user, participantId) => {
     }
   });
   if (!participant) {
-    throw new AppError_default(status10.NOT_FOUND, "Participant not found");
+    throw new AppError_default(status9.NOT_FOUND, "Participant not found");
   }
   if (participant.event.status !== EventStatus.ACTIVE) {
     throw new AppError_default(
-      status10.BAD_REQUEST,
+      status9.BAD_REQUEST,
       "You cannot update participation on a non-active event"
     );
   }
   if (participant.event.ownerId !== user.userId && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status10.FORBIDDEN,
+      status9.FORBIDDEN,
       "You are not allowed to approve this participant"
     );
   }
   if (participant.status !== ParticipationStatus.PENDING) {
     throw new AppError_default(
-      status10.BAD_REQUEST,
+      status9.BAD_REQUEST,
       "Only pending requests can be approved"
     );
   }
   if (participant.event.feeType === FeeType.PAID && participant.paymentStatus !== PaymentStatus.PAID) {
     throw new AppError_default(
-      status10.BAD_REQUEST,
+      status9.BAD_REQUEST,
       "Payment is required before approval"
     );
   }
@@ -3019,11 +3045,11 @@ var rejectParticipant = async (user, participantId) => {
     }
   });
   if (!participant) {
-    throw new AppError_default(status10.NOT_FOUND, "Participant not found");
+    throw new AppError_default(status9.NOT_FOUND, "Participant not found");
   }
   if (participant.event.ownerId !== user.userId && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status10.FORBIDDEN,
+      status9.FORBIDDEN,
       "You are not allowed to reject this participant"
     );
   }
@@ -3049,11 +3075,11 @@ var banParticipant = async (user, participantId) => {
     }
   });
   if (!participant) {
-    throw new AppError_default(status10.NOT_FOUND, "Participant not found");
+    throw new AppError_default(status9.NOT_FOUND, "Participant not found");
   }
   if (participant.event.ownerId !== user.userId && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status10.FORBIDDEN,
+      status9.FORBIDDEN,
       "You are not allowed to ban this participant"
     );
   }
@@ -3085,7 +3111,7 @@ var joinEvent2 = catchAsync_default(async (req, res) => {
     req.params.eventId
   );
   sendResponse(res, {
-    httpStatusCode: status11.CREATED,
+    httpStatusCode: status10.CREATED,
     success: true,
     message: "Participation request created successfully",
     data: result
@@ -3097,7 +3123,7 @@ var getMyParticipations2 = catchAsync_default(async (req, res) => {
     req.query
   );
   sendResponse(res, {
-    httpStatusCode: status11.OK,
+    httpStatusCode: status10.OK,
     success: true,
     message: "My participations retrieved successfully",
     data: result
@@ -3109,7 +3135,7 @@ var getEventParticipants2 = catchAsync_default(async (req, res) => {
     req.params.eventId
   );
   sendResponse(res, {
-    httpStatusCode: status11.OK,
+    httpStatusCode: status10.OK,
     success: true,
     message: "Event participants retrieved successfully",
     data: result
@@ -3121,7 +3147,7 @@ var getMyPendingApprovals2 = catchAsync_default(
       req.user
     );
     sendResponse(res, {
-      httpStatusCode: status11.OK,
+      httpStatusCode: status10.OK,
       success: true,
       message: "My pending approvals retrieved successfully",
       data: result
@@ -3134,7 +3160,7 @@ var approveParticipant2 = catchAsync_default(async (req, res) => {
     req.params.participantId
   );
   sendResponse(res, {
-    httpStatusCode: status11.OK,
+    httpStatusCode: status10.OK,
     success: true,
     message: "Participant accepted and joined successfully",
     data: result
@@ -3146,7 +3172,7 @@ var acceptParticipant = catchAsync_default(async (req, res) => {
     req.params.participantId
   );
   sendResponse(res, {
-    httpStatusCode: status11.OK,
+    httpStatusCode: status10.OK,
     success: true,
     message: "Participant accepted and joined successfully",
     data: result
@@ -3158,7 +3184,7 @@ var rejectParticipant2 = catchAsync_default(async (req, res) => {
     req.params.participantId
   );
   sendResponse(res, {
-    httpStatusCode: status11.OK,
+    httpStatusCode: status10.OK,
     success: true,
     message: "Participant rejected successfully",
     data: result
@@ -3170,7 +3196,7 @@ var banParticipant2 = catchAsync_default(async (req, res) => {
     req.params.participantId
   );
   sendResponse(res, {
-    httpStatusCode: status11.OK,
+    httpStatusCode: status10.OK,
     success: true,
     message: "Participant banned successfully",
     data: result
@@ -3235,10 +3261,10 @@ var ParticipationRoutes = router4;
 import { Router as Router5 } from "express";
 
 // src/app/modules/invitation/invitation.controller.ts
-import status13 from "http-status";
+import status12 from "http-status";
 
 // src/app/modules/invitation/invitation.service.ts
-import status12 from "http-status";
+import status11 from "http-status";
 
 // src/app/modules/invitation/invitation.constant.ts
 var InvitationStatus2 = {
@@ -3258,19 +3284,19 @@ var inviteUser = async (user, eventId, payload) => {
     }
   });
   if (!event) {
-    throw new AppError_default(status12.NOT_FOUND, "Event not found");
+    throw new AppError_default(status11.NOT_FOUND, "Event not found");
   }
   if (event.status !== EventStatus.ACTIVE) {
     throw new AppError_default(
-      status12.BAD_REQUEST,
+      status11.BAD_REQUEST,
       "Cannot invite users to a non-active event"
     );
   }
   if (event.ownerId !== user.userId && user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN) {
-    throw new AppError_default(status12.FORBIDDEN, "You are not allowed to invite users");
+    throw new AppError_default(status11.FORBIDDEN, "You are not allowed to invite users");
   }
   if (payload.userId === event.ownerId) {
-    throw new AppError_default(status12.BAD_REQUEST, "Event owner cannot be invited");
+    throw new AppError_default(status11.BAD_REQUEST, "Event owner cannot be invited");
   }
   const invitedUser = await prisma.user.findUnique({
     where: {
@@ -3278,7 +3304,7 @@ var inviteUser = async (user, eventId, payload) => {
     }
   });
   if (!invitedUser || invitedUser.isDeleted || invitedUser.status === UserStatus.DELETED) {
-    throw new AppError_default(status12.NOT_FOUND, "Invited user not found");
+    throw new AppError_default(status11.NOT_FOUND, "Invited user not found");
   }
   const existingInvitation = await prisma.eventInvitation.findFirst({
     where: {
@@ -3288,7 +3314,7 @@ var inviteUser = async (user, eventId, payload) => {
     }
   });
   if (existingInvitation) {
-    throw new AppError_default(status12.CONFLICT, "Invitation already exists");
+    throw new AppError_default(status11.CONFLICT, "Invitation already exists");
   }
   const existingParticipant = await prisma.eventParticipant.findFirst({
     where: {
@@ -3299,7 +3325,7 @@ var inviteUser = async (user, eventId, payload) => {
   });
   if (existingParticipant) {
     throw new AppError_default(
-      status12.CONFLICT,
+      status11.CONFLICT,
       "User already joined or requested this event"
     );
   }
@@ -3363,17 +3389,17 @@ var acceptInvitation = async (user, invitationId) => {
     }
   });
   if (!invitation) {
-    throw new AppError_default(status12.NOT_FOUND, "Invitation not found");
+    throw new AppError_default(status11.NOT_FOUND, "Invitation not found");
   }
   if (invitation.status !== InvitationStatus2.PENDING) {
     throw new AppError_default(
-      status12.BAD_REQUEST,
+      status11.BAD_REQUEST,
       "Only pending invitations can be accepted"
     );
   }
   if (invitation.event.status !== EventStatus.ACTIVE) {
     throw new AppError_default(
-      status12.BAD_REQUEST,
+      status11.BAD_REQUEST,
       "This event is not accepting new participants"
     );
   }
@@ -3385,7 +3411,7 @@ var acceptInvitation = async (user, invitationId) => {
     }
   });
   if (existingParticipant) {
-    throw new AppError_default(status12.CONFLICT, "Participant already exists");
+    throw new AppError_default(status11.CONFLICT, "Participant already exists");
   }
   const result = await prisma.$transaction(async (tx) => {
     await tx.eventInvitation.update({
@@ -3421,11 +3447,11 @@ var rejectInvitation = async (user, invitationId) => {
     }
   });
   if (!invitation) {
-    throw new AppError_default(status12.NOT_FOUND, "Invitation not found");
+    throw new AppError_default(status11.NOT_FOUND, "Invitation not found");
   }
   if (invitation.status !== InvitationStatus2.PENDING) {
     throw new AppError_default(
-      status12.BAD_REQUEST,
+      status11.BAD_REQUEST,
       "Only pending invitations can be rejected"
     );
   }
@@ -3454,7 +3480,7 @@ var inviteUser2 = catchAsync_default(async (req, res) => {
     req.body
   );
   sendResponse(res, {
-    httpStatusCode: status13.CREATED,
+    httpStatusCode: status12.CREATED,
     success: true,
     message: "Invitation sent successfully",
     data: result
@@ -3466,7 +3492,7 @@ var getMyInvitations2 = catchAsync_default(async (req, res) => {
     req.query
   );
   sendResponse(res, {
-    httpStatusCode: status13.OK,
+    httpStatusCode: status12.OK,
     success: true,
     message: "Invitations retrieved successfully",
     data: result.data,
@@ -3479,7 +3505,7 @@ var acceptInvitation2 = catchAsync_default(async (req, res) => {
     req.params.invitationId
   );
   sendResponse(res, {
-    httpStatusCode: status13.OK,
+    httpStatusCode: status12.OK,
     success: true,
     message: "Invitation accepted successfully",
     data: result
@@ -3491,7 +3517,7 @@ var rejectInvitation2 = catchAsync_default(async (req, res) => {
     req.params.invitationId
   );
   sendResponse(res, {
-    httpStatusCode: status13.OK,
+    httpStatusCode: status12.OK,
     success: true,
     message: "Invitation rejected successfully",
     data: result
@@ -3541,10 +3567,10 @@ var InvitationRoutes = router5;
 import { Router as Router6 } from "express";
 
 // src/app/modules/review/review.controller.ts
-import status15 from "http-status";
+import status14 from "http-status";
 
 // src/app/modules/review/review.service.ts
-import status14 from "http-status";
+import status13 from "http-status";
 var REVIEW_EDIT_WINDOW_DAYS = 7;
 var createReview = async (user, eventId, payload) => {
   const event = await prisma.event.findFirst({
@@ -3554,11 +3580,11 @@ var createReview = async (user, eventId, payload) => {
     }
   });
   if (!event) {
-    throw new AppError_default(status14.NOT_FOUND, "Event not found");
+    throw new AppError_default(status13.NOT_FOUND, "Event not found");
   }
   if (event.status !== EventStatus.COMPLETED) {
     throw new AppError_default(
-      status14.BAD_REQUEST,
+      status13.BAD_REQUEST,
       "You can review only after the event is completed by the owner"
     );
   }
@@ -3574,7 +3600,7 @@ var createReview = async (user, eventId, payload) => {
   });
   if (!participant) {
     throw new AppError_default(
-      status14.FORBIDDEN,
+      status13.FORBIDDEN,
       "You are not allowed to review this event"
     );
   }
@@ -3586,7 +3612,7 @@ var createReview = async (user, eventId, payload) => {
     }
   });
   if (existingReview) {
-    throw new AppError_default(status14.CONFLICT, "You already reviewed this event");
+    throw new AppError_default(status13.CONFLICT, "You already reviewed this event");
   }
   const review = await prisma.eventReview.create({
     data: {
@@ -3657,18 +3683,18 @@ var updateReview = async (user, reviewId, payload) => {
     }
   });
   if (!review) {
-    throw new AppError_default(status14.NOT_FOUND, "Review not found");
+    throw new AppError_default(status13.NOT_FOUND, "Review not found");
   }
   if (review.userId !== user.userId) {
     throw new AppError_default(
-      status14.FORBIDDEN,
+      status13.FORBIDDEN,
       "You are not allowed to update this review"
     );
   }
   const reviewDeadline = new Date(review.event.eventDateTime);
   reviewDeadline.setDate(reviewDeadline.getDate() + REVIEW_EDIT_WINDOW_DAYS);
   if (/* @__PURE__ */ new Date() > reviewDeadline) {
-    throw new AppError_default(status14.BAD_REQUEST, "Review edit period expired");
+    throw new AppError_default(status13.BAD_REQUEST, "Review edit period expired");
   }
   const updatedReview = await prisma.eventReview.update({
     where: {
@@ -3700,18 +3726,18 @@ var deleteReview = async (user, reviewId) => {
     }
   });
   if (!review) {
-    throw new AppError_default(status14.NOT_FOUND, "Review not found");
+    throw new AppError_default(status13.NOT_FOUND, "Review not found");
   }
   if (review.userId !== user.userId) {
     throw new AppError_default(
-      status14.FORBIDDEN,
+      status13.FORBIDDEN,
       "You are not allowed to delete this review"
     );
   }
   const reviewDeadline = new Date(review.event.eventDateTime);
   reviewDeadline.setDate(reviewDeadline.getDate() + REVIEW_EDIT_WINDOW_DAYS);
   if (/* @__PURE__ */ new Date() > reviewDeadline) {
-    throw new AppError_default(status14.BAD_REQUEST, "Review delete period expired");
+    throw new AppError_default(status13.BAD_REQUEST, "Review delete period expired");
   }
   const deletedReview = await prisma.eventReview.update({
     where: {
@@ -3740,7 +3766,7 @@ var createReview2 = catchAsync_default(async (req, res) => {
     req.body
   );
   sendResponse(res, {
-    httpStatusCode: status15.CREATED,
+    httpStatusCode: status14.CREATED,
     success: true,
     message: "Review created successfully",
     data: result
@@ -3751,7 +3777,7 @@ var getEventReviews2 = catchAsync_default(async (req, res) => {
     req.params.eventId
   );
   sendResponse(res, {
-    httpStatusCode: status15.OK,
+    httpStatusCode: status14.OK,
     success: true,
     message: "Event reviews retrieved successfully",
     data: result
@@ -3760,7 +3786,7 @@ var getEventReviews2 = catchAsync_default(async (req, res) => {
 var getMyReviews2 = catchAsync_default(async (req, res) => {
   const result = await ReviewService.getMyReviews(req.user);
   sendResponse(res, {
-    httpStatusCode: status15.OK,
+    httpStatusCode: status14.OK,
     success: true,
     message: "My reviews retrieved successfully",
     data: result
@@ -3773,7 +3799,7 @@ var updateReview2 = catchAsync_default(async (req, res) => {
     req.body
   );
   sendResponse(res, {
-    httpStatusCode: status15.OK,
+    httpStatusCode: status14.OK,
     success: true,
     message: "Review updated successfully",
     data: result
@@ -3785,7 +3811,7 @@ var deleteReview2 = catchAsync_default(async (req, res) => {
     req.params.reviewId
   );
   sendResponse(res, {
-    httpStatusCode: status15.OK,
+    httpStatusCode: status14.OK,
     success: true,
     message: "Review deleted successfully",
     data: result
@@ -3845,7 +3871,7 @@ var ReviewRoutes = router6;
 import { Router as Router7 } from "express";
 
 // src/app/modules/payment/payment.controller.ts
-import status16 from "http-status";
+import status15 from "http-status";
 
 // src/app/modules/payment/payment.constant.ts
 var PAYMENT_MESSAGE = {
@@ -4461,7 +4487,7 @@ var initiatePayment = catchAsync_default(async (req, res) => {
     frontendBaseUrl
   );
   sendResponse(res, {
-    httpStatusCode: status16.CREATED,
+    httpStatusCode: status15.CREATED,
     success: true,
     message: PAYMENT_MESSAGE.INITIATED,
     data: result
@@ -4473,7 +4499,7 @@ var paymentSuccess = async (req, res) => {
   const frontendBaseUrl = resolveFrontendBaseUrlFromRequest(req);
   try {
     if (!trxId) {
-      throw new AppError_default(status16.BAD_REQUEST, "trxId is required");
+      throw new AppError_default(status15.BAD_REQUEST, "trxId is required");
     }
     await PaymentService.handlePaymentSuccess(trxId, valId, {
       ...req.query,
@@ -4493,7 +4519,7 @@ var paymentFail = async (req, res) => {
   const frontendBaseUrl = resolveFrontendBaseUrlFromRequest(req);
   try {
     if (!trxId) {
-      throw new AppError_default(status16.BAD_REQUEST, "trxId is required");
+      throw new AppError_default(status15.BAD_REQUEST, "trxId is required");
     }
     await PaymentService.handlePaymentFail(trxId, {
       ...req.query,
@@ -4510,7 +4536,7 @@ var paymentCancel = async (req, res) => {
   const frontendBaseUrl = resolveFrontendBaseUrlFromRequest(req);
   try {
     if (!trxId) {
-      throw new AppError_default(status16.BAD_REQUEST, "trxId is required");
+      throw new AppError_default(status15.BAD_REQUEST, "trxId is required");
     }
     await PaymentService.handlePaymentCancel(trxId, {
       ...req.query,
@@ -4525,7 +4551,7 @@ var paymentCancel = async (req, res) => {
 var paymentIPN = catchAsync_default(async (req, res) => {
   await PaymentService.handlePaymentIPN(req.body);
   sendResponse(res, {
-    httpStatusCode: status16.OK,
+    httpStatusCode: status15.OK,
     success: true,
     message: PAYMENT_MESSAGE.IPN_RECEIVED,
     data: null
@@ -4537,12 +4563,12 @@ var validateTransaction = catchAsync_default(async (req, res) => {
   const result = await PaymentService.validateExistingTransaction(trxId);
   if (user.role !== Role.ADMIN && user.role !== Role.SUPER_ADMIN && result.userId !== user.userId) {
     throw new AppError_default(
-      status16.FORBIDDEN,
+      status15.FORBIDDEN,
       "You are not allowed to view this transaction"
     );
   }
   sendResponse(res, {
-    httpStatusCode: status16.OK,
+    httpStatusCode: status15.OK,
     success: true,
     message: PAYMENT_MESSAGE.VERIFIED,
     data: result
@@ -4554,7 +4580,7 @@ var getMyPayments2 = catchAsync_default(async (req, res) => {
     req.query
   );
   sendResponse(res, {
-    httpStatusCode: status16.OK,
+    httpStatusCode: status15.OK,
     success: true,
     message: "My payments retrieved successfully",
     data: result.data,
@@ -4567,7 +4593,7 @@ var getAllPayments2 = catchAsync_default(async (req, res) => {
     req.query
   );
   sendResponse(res, {
-    httpStatusCode: status16.OK,
+    httpStatusCode: status15.OK,
     success: true,
     message: "All payments retrieved successfully",
     data: result.data,
@@ -4660,7 +4686,7 @@ var PaymentRoutes = router7;
 import { Router as Router8 } from "express";
 
 // src/app/modules/dashboard/dashboard.controller.ts
-import status17 from "http-status";
+import status16 from "http-status";
 
 // src/app/modules/dashboard/dashboard.service.ts
 var getSummary = async (user) => {
@@ -4894,7 +4920,7 @@ var DashboardService = {
 var getSummary2 = catchAsync_default(async (req, res) => {
   const result = await DashboardService.getSummary(req.user);
   sendResponse(res, {
-    httpStatusCode: status17.OK,
+    httpStatusCode: status16.OK,
     success: true,
     message: "Dashboard summary retrieved successfully",
     data: result
@@ -4903,7 +4929,7 @@ var getSummary2 = catchAsync_default(async (req, res) => {
 var getMyEvents4 = catchAsync_default(async (req, res) => {
   const result = await DashboardService.getMyEvents(req.user);
   sendResponse(res, {
-    httpStatusCode: status17.OK,
+    httpStatusCode: status16.OK,
     success: true,
     message: "My events retrieved successfully",
     data: result
@@ -4915,7 +4941,7 @@ var getPendingInvitations2 = catchAsync_default(
       req.user
     );
     sendResponse(res, {
-      httpStatusCode: status17.OK,
+      httpStatusCode: status16.OK,
       success: true,
       message: "Pending invitations retrieved successfully",
       data: result
@@ -4925,7 +4951,7 @@ var getPendingInvitations2 = catchAsync_default(
 var getMyReviews4 = catchAsync_default(async (req, res) => {
   const result = await DashboardService.getMyReviews(req.user);
   sendResponse(res, {
-    httpStatusCode: status17.OK,
+    httpStatusCode: status16.OK,
     success: true,
     message: "My reviews retrieved successfully",
     data: result
@@ -4934,7 +4960,7 @@ var getMyReviews4 = catchAsync_default(async (req, res) => {
 var getMyRequests2 = catchAsync_default(async (req, res) => {
   const result = await DashboardService.getMyRequests(req.user);
   sendResponse(res, {
-    httpStatusCode: status17.OK,
+    httpStatusCode: status16.OK,
     success: true,
     message: "My participation requests retrieved successfully",
     data: result
@@ -4945,7 +4971,7 @@ var getPendingApprovals2 = catchAsync_default(async (req, res) => {
     req.user
   );
   sendResponse(res, {
-    httpStatusCode: status17.OK,
+    httpStatusCode: status16.OK,
     success: true,
     message: "Pending approvals retrieved successfully",
     data: result
@@ -4957,7 +4983,7 @@ var getMyEventStatusSummary2 = catchAsync_default(
       req.user
     );
     sendResponse(res, {
-      httpStatusCode: status17.OK,
+      httpStatusCode: status16.OK,
       success: true,
       message: "My event participation status summary retrieved successfully",
       data: result
@@ -5017,10 +5043,10 @@ var DashboardRoutes = router8;
 import { Router as Router9 } from "express";
 
 // src/app/modules/admin/admin.controller.ts
-import status19 from "http-status";
+import status18 from "http-status";
 
 // src/app/modules/admin/admin.service.ts
-import status18 from "http-status";
+import status17 from "http-status";
 var getStats = async () => {
   const [totalUsers, totalEvents, totalReviews, totalParticipants] = await Promise.all([
     prisma.user.count({
@@ -5292,7 +5318,7 @@ var getUserById = async (userId) => {
     }
   });
   if (!user) {
-    throw new AppError_default(status18.NOT_FOUND, "User not found");
+    throw new AppError_default(status17.NOT_FOUND, "User not found");
   }
   return user;
 };
@@ -5366,33 +5392,33 @@ var updateUser = async (adminUser, userId, payload) => {
     }
   });
   if (!existingUser || existingUser.isDeleted) {
-    throw new AppError_default(status18.NOT_FOUND, "User not found");
+    throw new AppError_default(status17.NOT_FOUND, "User not found");
   }
   if (Object.keys(payload).length === 0) {
-    throw new AppError_default(status18.BAD_REQUEST, "No data provided");
+    throw new AppError_default(status17.BAD_REQUEST, "No data provided");
   }
   if (adminUser.userId === userId && (payload.role !== void 0 || payload.status !== void 0)) {
     throw new AppError_default(
-      status18.BAD_REQUEST,
+      status17.BAD_REQUEST,
       "You cannot change your own role or status from this endpoint"
     );
   }
   if (payload.role === Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status18.BAD_REQUEST,
+      status17.BAD_REQUEST,
       "Setting SUPER_ADMIN role is not allowed from this endpoint"
     );
   }
   if (existingUser.role === Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status18.BAD_REQUEST,
+      status17.BAD_REQUEST,
       "Super admin account cannot be modified from this endpoint"
     );
   }
   if (adminUser.role === Role.ADMIN && payload.role !== void 0) {
     if (existingUser.role !== Role.USER || payload.role !== Role.ADMIN) {
       throw new AppError_default(
-        status18.BAD_REQUEST,
+        status17.BAD_REQUEST,
         "Admin can only promote user role to admin"
       );
     }
@@ -5400,25 +5426,25 @@ var updateUser = async (adminUser, userId, payload) => {
   if (existingUser.role === Role.ADMIN && (payload.role !== void 0 || payload.status !== void 0)) {
     if (adminUser.role !== Role.SUPER_ADMIN) {
       throw new AppError_default(
-        status18.BAD_REQUEST,
+        status17.BAD_REQUEST,
         "Only super admin can change admin account role or status"
       );
     }
     if (payload.role !== void 0 && payload.role !== Role.USER) {
       throw new AppError_default(
-        status18.BAD_REQUEST,
+        status17.BAD_REQUEST,
         "Super admin can only demote admin to user from this endpoint"
       );
     }
     if (payload.status !== void 0) {
       throw new AppError_default(
-        status18.BAD_REQUEST,
+        status17.BAD_REQUEST,
         "Admin account status cannot be changed from this endpoint"
       );
     }
     if (payload.role === void 0) {
       throw new AppError_default(
-        status18.BAD_REQUEST,
+        status17.BAD_REQUEST,
         "Provide role USER to demote this admin account"
       );
     }
@@ -5452,11 +5478,11 @@ var blockUser = async (userId) => {
     }
   });
   if (!existingUser || existingUser.isDeleted) {
-    throw new AppError_default(status18.NOT_FOUND, "User not found");
+    throw new AppError_default(status17.NOT_FOUND, "User not found");
   }
   if (existingUser.role === Role.ADMIN || existingUser.role === Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status18.BAD_REQUEST,
+      status17.BAD_REQUEST,
       "Admin or super admin accounts cannot be blocked from this endpoint"
     );
   }
@@ -5477,7 +5503,7 @@ var unblockUser = async (userId) => {
     }
   });
   if (!existingUser || existingUser.isDeleted) {
-    throw new AppError_default(status18.NOT_FOUND, "User not found");
+    throw new AppError_default(status17.NOT_FOUND, "User not found");
   }
   const updatedUser = await prisma.user.update({
     where: {
@@ -5496,11 +5522,11 @@ var deleteUser = async (userId) => {
     }
   });
   if (!existingUser || existingUser.isDeleted) {
-    throw new AppError_default(status18.NOT_FOUND, "User not found");
+    throw new AppError_default(status17.NOT_FOUND, "User not found");
   }
   if (existingUser.role === Role.ADMIN || existingUser.role === Role.SUPER_ADMIN) {
     throw new AppError_default(
-      status18.BAD_REQUEST,
+      status17.BAD_REQUEST,
       "Admin or super admin accounts cannot be deleted from this endpoint"
     );
   }
@@ -5524,7 +5550,7 @@ var deleteEvent3 = async (eventId) => {
     }
   });
   if (!existingEvent) {
-    throw new AppError_default(status18.NOT_FOUND, "Event not found");
+    throw new AppError_default(status17.NOT_FOUND, "Event not found");
   }
   const updatedEvent = await prisma.event.update({
     where: {
@@ -5554,7 +5580,7 @@ var AdminService = {
 var getStats2 = catchAsync_default(async (_req, res) => {
   const result = await AdminService.getStats();
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "Admin stats retrieved successfully",
     data: result
@@ -5563,7 +5589,7 @@ var getStats2 = catchAsync_default(async (_req, res) => {
 var getReportsSummary2 = catchAsync_default(async (_req, res) => {
   const result = await AdminService.getReportsSummary();
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "Admin report summary retrieved successfully",
     data: result
@@ -5572,7 +5598,7 @@ var getReportsSummary2 = catchAsync_default(async (_req, res) => {
 var getAllUsers2 = catchAsync_default(async (req, res) => {
   const result = await AdminService.getAllUsers(req.query);
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "Users retrieved successfully",
     data: result.data,
@@ -5582,7 +5608,7 @@ var getAllUsers2 = catchAsync_default(async (req, res) => {
 var getUserById2 = catchAsync_default(async (req, res) => {
   const result = await AdminService.getUserById(req.params.userId);
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "User retrieved successfully",
     data: result
@@ -5591,7 +5617,7 @@ var getUserById2 = catchAsync_default(async (req, res) => {
 var getAllEvents4 = catchAsync_default(async (req, res) => {
   const result = await AdminService.getAllEvents(req.query);
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "Events retrieved successfully",
     data: result.data,
@@ -5605,7 +5631,7 @@ var updateUser2 = catchAsync_default(async (req, res) => {
     req.body
   );
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "User updated successfully",
     data: result
@@ -5614,7 +5640,7 @@ var updateUser2 = catchAsync_default(async (req, res) => {
 var blockUser2 = catchAsync_default(async (req, res) => {
   const result = await AdminService.blockUser(req.params.userId);
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "User blocked successfully",
     data: result
@@ -5623,7 +5649,7 @@ var blockUser2 = catchAsync_default(async (req, res) => {
 var unblockUser2 = catchAsync_default(async (req, res) => {
   const result = await AdminService.unblockUser(req.params.userId);
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "User unblocked successfully",
     data: result
@@ -5632,7 +5658,7 @@ var unblockUser2 = catchAsync_default(async (req, res) => {
 var deleteUser2 = catchAsync_default(async (req, res) => {
   const result = await AdminService.deleteUser(req.params.userId);
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "User deleted successfully",
     data: result
@@ -5641,7 +5667,7 @@ var deleteUser2 = catchAsync_default(async (req, res) => {
 var deleteEvent4 = catchAsync_default(async (req, res) => {
   const result = await AdminService.deleteEvent(req.params.eventId);
   sendResponse(res, {
-    httpStatusCode: status19.OK,
+    httpStatusCode: status18.OK,
     success: true,
     message: "Event deleted successfully",
     data: result
@@ -5720,10 +5746,10 @@ var AdminRoutes = router9;
 import { Router as Router10 } from "express";
 
 // src/app/modules/chatbot/chatbot.controller.ts
-import status21 from "http-status";
+import status20 from "http-status";
 
 // src/app/modules/chatbot/chatbot.service.ts
-import status20 from "http-status";
+import status19 from "http-status";
 var SYSTEM_PROMPT = "You are Planora Assistant. You must answer using only provided Planora event database context. Never invent events, prices, dates, links, or venues. If requested data is unavailable in the provided context, say that clearly and ask the user to refine search criteria.";
 var buildSearchTerms = (message) => {
   const normalized = message.trim().toLowerCase();
@@ -5932,7 +5958,7 @@ ${eventContext}`
   if (!reply) {
     return {
       ok: false,
-      statusCode: status20.BAD_GATEWAY,
+      statusCode: status19.BAD_GATEWAY,
       modelName,
       rawBody: "OpenRouter returned empty response."
     };
@@ -5947,7 +5973,7 @@ var getChatReply = async (payload) => {
   const openRouterApiKey = envVars.OPENROUTER.API_KEY;
   if (!openRouterApiKey) {
     throw new AppError_default(
-      status20.INTERNAL_SERVER_ERROR,
+      status19.INTERNAL_SERVER_ERROR,
       "Chatbot service is not configured. Missing OPENROUTER_API_KEY."
     );
   }
@@ -5985,14 +6011,14 @@ var getChatReply = async (payload) => {
     };
   }
   const rawError = (lastError?.rawBody || "").toUpperCase();
-  const isQuotaError = lastError?.statusCode === status20.TOO_MANY_REQUESTS || rawError.includes("RESOURCE_EXHAUSTED") || rawError.includes("QUOTA");
+  const isQuotaError = lastError?.statusCode === status19.TOO_MANY_REQUESTS || rawError.includes("RESOURCE_EXHAUSTED") || rawError.includes("QUOTA");
   if (isQuotaError) {
     return {
       reply: buildQuotaFallbackReply(payload.message)
     };
   }
   throw new AppError_default(
-    status20.BAD_GATEWAY,
+    status19.BAD_GATEWAY,
     `OpenRouter request failed for model ${lastError?.modelName || envVars.OPENROUTER.MODEL} with status ${lastError?.statusCode || "unknown"}: ${lastError?.rawBody || "Unknown error"}`
   );
 };
@@ -6004,7 +6030,7 @@ var ChatbotService = {
 var sendMessage = catchAsync_default(async (req, res) => {
   const result = await ChatbotService.getChatReply(req.body);
   sendResponse(res, {
-    httpStatusCode: status21.OK,
+    httpStatusCode: status20.OK,
     success: true,
     message: "Chatbot response generated successfully",
     data: result
@@ -6030,7 +6056,7 @@ var chatbotMessageValidationSchema = z7.object({
 });
 
 // src/app/middleware/chatbotRateLimit.ts
-import status22 from "http-status";
+import status21 from "http-status";
 var REQUEST_LIMIT = 20;
 var WINDOW_MS = 60 * 1e3;
 var rateStore = /* @__PURE__ */ new Map();
@@ -6072,7 +6098,7 @@ var chatbotRateLimit = (req, res, next) => {
     res.setHeader("Retry-After", String(retryAfterSeconds));
     next(
       new AppError_default(
-        status22.TOO_MANY_REQUESTS,
+        status21.TOO_MANY_REQUESTS,
         "Too many chatbot requests. Please try again shortly."
       )
     );
@@ -6108,22 +6134,22 @@ router11.use("/chatbot", ChatbotRoutes);
 var IndexRoutes = router11;
 
 // src/app/middleware/notFound.ts
-import status23 from "http-status";
+import status22 from "http-status";
 var notFound = (req, res) => {
-  res.status(status23.NOT_FOUND).json({
+  res.status(status22.NOT_FOUND).json({
     success: false,
     message: `Route ${req.originalUrl} Not Found`
   });
 };
 
 // src/app/middleware/globalErrorHandler.ts
-import status25 from "http-status";
+import status24 from "http-status";
 import z8 from "zod";
 
 // src/app/errorHelpers/handleZodError.ts
-import status24 from "http-status";
+import status23 from "http-status";
 var handleZodError = (err) => {
-  const statusCode = status24.BAD_REQUEST;
+  const statusCode = status23.BAD_REQUEST;
   const message = "Zod Validation Error";
   const errorSources = [];
   err.issues.forEach((issue) => {
@@ -6153,7 +6179,7 @@ var globalErrorHandler = async (err, req, res, next) => {
     await Promise.all(imageUrls.map((url) => deleteFileFromCloudinary(url)));
   }
   let errorSources = [];
-  let statusCode = status25.INTERNAL_SERVER_ERROR;
+  let statusCode = status24.INTERNAL_SERVER_ERROR;
   let message = "Internal Server Error";
   let stack = void 0;
   if (err instanceof z8.ZodError) {
@@ -6173,7 +6199,7 @@ var globalErrorHandler = async (err, req, res, next) => {
       }
     ];
   } else if (err instanceof Error) {
-    statusCode = status25.INTERNAL_SERVER_ERROR;
+    statusCode = status24.INTERNAL_SERVER_ERROR;
     message = err.message;
     stack = err.stack;
     errorSources = [
