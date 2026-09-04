@@ -390,6 +390,7 @@ var auth = betterAuth({
     google: {
       clientId: envVars.GOOGLE_CLIENT_ID,
       clientSecret: envVars.GOOGLE_CLIENT_SECRET,
+      redirectURI: `${envVars.BETTER_AUTH_URL}/api/auth/callback/google`,
       mapProfileToUser: () => {
         return {
           role: Role.USER,
@@ -1124,14 +1125,36 @@ var resetPassword2 = catchAsync_default(async (req, res) => {
     message: "Password reset successfully"
   });
 });
-var googleLogin = catchAsync_default((req, res) => {
+var googleLogin = catchAsync_default(async (req, res) => {
   const redirectPath = req.query.redirect || "/dashboard";
   const encodedRedirectPath = encodeURIComponent(redirectPath);
-  const callbackURL = `${envVars.BETTER_AUTH_URL}/api/v1/auth/google/success?redirect=${encodedRedirectPath}`;
-  res.render("googleRedirect", {
-    callbackURL,
-    betterAuthUrl: envVars.BETTER_AUTH_URL
-  });
+  const backendUrl = envVars.BETTER_AUTH_URL || "https://planora-backend-4bez.vercel.app";
+  const callbackURL = `${backendUrl}/api/v1/auth/google/success?redirect=${encodedRedirectPath}`;
+  try {
+    const authResponse = await auth.api.signInSocial({
+      body: {
+        provider: "google",
+        callbackURL
+      },
+      asResponse: true
+    });
+    const location = authResponse.headers.get("location");
+    const setCookie2 = authResponse.headers.get("set-cookie");
+    if (setCookie2) {
+      res.setHeader("Set-Cookie", setCookie2);
+    }
+    if (location) {
+      return res.redirect(location);
+    }
+    const data = await authResponse.json();
+    if (data?.url) {
+      return res.redirect(data.url);
+    }
+    return res.redirect(`${envVars.FRONTEND_URL}/login?error=oauth_failed`);
+  } catch (error) {
+    console.error("Error starting Google sign-in:", error);
+    return res.redirect(`${envVars.FRONTEND_URL}/login?error=oauth_failed`);
+  }
 });
 var googleLoginSuccess2 = catchAsync_default(async (req, res) => {
   const redirectPath = req.query.redirect || "/dashboard";
