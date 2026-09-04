@@ -49,7 +49,7 @@ const loadEnvVariables = (): EnvConfig => {
   const defaults: Record<string, string> = {
     NODE_ENV: 'development',
     PORT: '5000',
-    FRONTEND_URL: 'https://planora-frontend-two.vercel.app',
+    FRONTEND_URL: 'https://planora-frontend-2kwh.vercel.app',
     BETTER_AUTH_URL: 'https://planora-backend-4bez.vercel.app',
     ACCESS_TOKEN_SECRET: 'Kjs82kLmPq91@xYt45!zWvR7uBnC38',
     REFRESH_TOKEN_SECRET: 'Zp94!LmRt72QaXs8VwE6yUoF1dHjK58',
